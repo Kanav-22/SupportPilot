@@ -4,14 +4,14 @@ AI-powered support ticket triage pipeline for classifying tickets, assigning pri
 
 ## What It Builds
 
-SupportPilot ingests a labeled support-ticket CSV into SQLite, runs two prompt variants through an OpenAI-compatible chat completion API, stores structured triage results, and generates a reproducible metrics report.
+SupportPilot ingests labeled support tickets into SQLite, runs two prompt variants through an OpenAI-compatible chat completion API, stores structured triage results, and generates a reproducible metrics report.
 
 The n8n workflow is included as the automation showcase. The Python runner is the reliable local path for development and final metrics.
 
 ## Architecture
 
 ```text
-Labeled CSV -> scripts/01_load_dataset.py -> SQLite tickets
+Source data -> scripts/01_load_dataset.py -> SQLite tickets
 SQLite tickets -> n8n or scripts/03_run_experiment.py -> LLM API
 LLM JSON -> SQLite triage_results -> scripts/04_analysis.py -> reports/metrics_report.md
 ```
@@ -29,24 +29,18 @@ Fill in `.env` with either Groq for development or OpenAI for the final measured
 
 ## Data
 
-Place the raw Kaggle CSV at:
-
-```text
-data/raw_tickets.csv
-```
-
-Then create the database and load a balanced-ish sample:
+Create the database and load an exact 200-ticket sample:
 
 ```powershell
 python scripts/02_setup_db.py
-python scripts/01_load_dataset.py --csv data/raw_tickets.csv --sample-size 200
+python scripts/01_load_dataset.py --csv <path-to-source-file> --sample-size 200
 ```
 
-If the dataset column names differ, pass them explicitly:
+The loader owns all source-specific parsing, cleaning, and sampling. Downstream code reads only from the `tickets` table.
 
-```powershell
-python scripts/01_load_dataset.py --text-col "Ticket Description" --category-col "Ticket Type" --priority-col "Ticket Priority"
-```
+## Swapping The Data Source
+
+To replace the dataset or connect a live source, change only `scripts/01_load_dataset.py` or replace it with a writer that inserts rows into `tickets`. Keep the `tickets` columns stable: `id`, `text`, `true_category`, `true_priority`, `source`, and `status`. Prompts, n8n, experiment runners, SQL analysis, and reports should continue to work without edits.
 
 ## Run The Experiment
 
