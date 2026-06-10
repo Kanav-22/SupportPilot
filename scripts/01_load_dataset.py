@@ -85,12 +85,11 @@ def load_dataset(
     clean = clean.drop_duplicates(subset=["text", "true_category"])
 
     if sample_size > 0 and len(clean) > sample_size:
-        clean = clean.groupby("true_category", group_keys=False).apply(
-            lambda group: group.sample(
-                n=max(1, round(sample_size * len(group) / len(clean))),
-                random_state=seed,
-            )
-        )
+        sampled_groups = []
+        for _, group in clean.groupby("true_category"):
+            group_size = max(1, round(sample_size * len(group) / len(clean)))
+            sampled_groups.append(group.sample(n=group_size, random_state=seed))
+        clean = pd.concat(sampled_groups, ignore_index=True)
         if len(clean) > sample_size:
             clean = clean.sample(n=sample_size, random_state=seed)
         elif len(clean) < sample_size:
