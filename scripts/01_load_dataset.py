@@ -7,6 +7,7 @@ from __future__ import annotations
 # source-file assumptions, cleaning logic, and sampling strategy.
 
 import argparse
+import re
 import sqlite3
 from pathlib import Path
 
@@ -19,6 +20,7 @@ CATEGORY_COL = "Ticket Type"
 PRIORITY_COL = "Ticket Priority"
 SOURCE_COL = "Ticket Channel"
 PLACEHOLDER = "{product_purchased}"
+PLACEHOLDER_PATTERN = re.compile(re.escape(PLACEHOLDER), flags=re.IGNORECASE)
 
 REQUIRED_COLUMNS = [
     DESCRIPTION_COL,
@@ -46,14 +48,14 @@ def clean_ticket_text(df: pd.DataFrame) -> pd.Series:
 
     cleaned = pd.Series(
         [
-            description.replace(PLACEHOLDER, product).strip()
+            PLACEHOLDER_PATTERN.sub(product, description).strip()
             for description, product in zip(descriptions, products, strict=True)
         ],
         index=df.index,
     )
 
-    remaining_placeholders = cleaned.str.contains(PLACEHOLDER, regex=False, na=False).sum()
-    assert remaining_placeholders == 0, f"{remaining_placeholders} cleaned tickets still contain {PLACEHOLDER}"
+    remaining_placeholders = cleaned.str.contains(PLACEHOLDER_PATTERN, na=False).sum()
+    assert remaining_placeholders == 0, f"{remaining_placeholders} cleaned tickets still contain product placeholders"
     return cleaned
 
 
@@ -105,7 +107,7 @@ def load_dataset(
 
     sample = stratified_sample(clean, sample_size=sample_size, seed=seed)
     assert len(sample) == sample_size, f"Expected {sample_size} sampled tickets, got {len(sample)}"
-    assert not sample["text"].str.contains(PLACEHOLDER, regex=False, na=False).any()
+    assert not sample["text"].str.contains(PLACEHOLDER_PATTERN, na=False).any()
 
     Path("data").mkdir(exist_ok=True)
     sample.to_csv("data/sample_200.csv", index=False)
