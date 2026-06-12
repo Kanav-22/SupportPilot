@@ -47,22 +47,43 @@ def parse_json_response(content: str) -> dict[str, Any]:
     return json.loads(content)
 
 
-def call_llm(api_key: str, base_url: str, model: str, prompt: str, timeout: int) -> tuple[dict[str, Any], dict[str, int], int]:
+def call_llm(
+    api_key: str,
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout: int,
+    max_retries: int,
+) -> tuple[dict[str, Any], dict[str, int], int]:
     started = time.perf_counter()
-    response = requests.post(
-        f"{base_url.rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=timeout,
-    )
+    last_response: requests.Response | None = None
+
+    for attempt in range(max_retries + 1):
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=timeout,
+        )
+        last_response = response
+
+        if response.status_code != 429:
+            break
+
+        retry_after = response.headers.get("Retry-After")
+        wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else min(60, 2 ** attempt)
+        print(f"Rate limited by provider; retrying in {wait_seconds}s ({attempt + 1}/{max_retries})")
+        time.sleep(wait_seconds)
+
     latency_ms = round((time.perf_counter() - started) * 1000)
-    response.raise_for_status()
-    payload = response.json()
+    assert last_response is not None
+    last_response.raise_for_status()
+    payload = last_response.json()
     usage = payload.get("usage", {})
     result = parse_json_response(payload["choices"][0]["message"]["content"])
     return result, usage, latency_ms
@@ -145,7 +166,7 @@ def run_variant(args: argparse.Namespace, variant: str) -> None:
         print(f"Running {variant} on {len(tickets)} tickets with {args.provider}:{model}")
         for index, ticket in enumerate(tickets, start=1):
             prompt = render_prompt(prompt_path, ticket["text"])
-            result, usage, latency_ms = call_llm(api_key, base_url, model, prompt, args.timeout)
+            result, usage, latency_ms = call_llm(api_key, base_url, model, prompt, args.timeout, args.max_retries)
             insert_result(conn, ticket["id"], variant, result, usage, latency_ms, threshold)
             conn.commit()
             print(f"[{index}/{len(tickets)}] ticket={ticket['id']} category={result.get('category')} confidence={result.get('confidence')}")
@@ -161,6 +182,7 @@ def main() -> None:
     parser.add_argument("--variant", choices=["zero_shot", "few_shot", "both"], default="both")
     parser.add_argument("--limit", type=int, help="Limit tickets per variant for smoke tests.")
     parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds.")
+    parser.add_argument("--max-retries", type=int, default=4, help="Retries for rate-limited API calls.")
     parser.add_argument("--confidence-threshold", type=float, default=0.70)
     args = parser.parse_args()
 
