@@ -5,4 +5,5 @@ __pycache__/
 
 db/*.db
 data/raw_tickets.csv
-reports/metrics_report.md
+data/sample_200.csv
+reports/smoke_*.md

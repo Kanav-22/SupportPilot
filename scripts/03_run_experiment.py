@@ -54,6 +54,7 @@ def call_llm(
     prompt: str,
     timeout: int,
     max_retries: int,
+    max_retry_wait: int,
 ) -> tuple[dict[str, Any], dict[str, int], int]:
     started = time.perf_counter()
     last_response: requests.Response | None = None
@@ -77,7 +78,12 @@ def call_llm(
 
         retry_after = response.headers.get("Retry-After")
         wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else min(60, 2 ** attempt)
-        print(f"Rate limited by provider; retrying in {wait_seconds}s ({attempt + 1}/{max_retries})")
+        if wait_seconds > max_retry_wait:
+            raise RuntimeError(
+                f"Provider rate limit requested a {wait_seconds}s wait, "
+                f"which exceeds --max-retry-wait={max_retry_wait}s."
+            )
+        print(f"Rate limited by provider; retrying in {wait_seconds}s ({attempt + 1}/{max_retries})", flush=True)
         time.sleep(wait_seconds)
 
     latency_ms = round((time.perf_counter() - started) * 1000)
@@ -165,11 +171,26 @@ def run_variant(args: argparse.Namespace, variant: str) -> None:
         tickets = pending_tickets(conn, variant, args.limit)
         print(f"Running {variant} on {len(tickets)} tickets with {args.provider}:{model}")
         for index, ticket in enumerate(tickets, start=1):
+            if index > 1 and args.sleep_seconds > 0:
+                time.sleep(args.sleep_seconds)
+
             prompt = render_prompt(prompt_path, ticket["text"])
-            result, usage, latency_ms = call_llm(api_key, base_url, model, prompt, args.timeout, args.max_retries)
+            result, usage, latency_ms = call_llm(
+                api_key,
+                base_url,
+                model,
+                prompt,
+                args.timeout,
+                args.max_retries,
+                args.max_retry_wait,
+            )
             insert_result(conn, ticket["id"], variant, result, usage, latency_ms, threshold)
             conn.commit()
-            print(f"[{index}/{len(tickets)}] ticket={ticket['id']} category={result.get('category')} confidence={result.get('confidence')}")
+            print(
+                f"[{index}/{len(tickets)}] ticket={ticket['id']} "
+                f"category={result.get('category')} confidence={result.get('confidence')}",
+                flush=True,
+            )
         mark_processed_when_done(conn)
         conn.commit()
 
@@ -183,6 +204,13 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Limit tickets per variant for smoke tests.")
     parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds.")
     parser.add_argument("--max-retries", type=int, default=4, help="Retries for rate-limited API calls.")
+    parser.add_argument("--sleep-seconds", type=float, default=0, help="Delay between successful ticket calls.")
+    parser.add_argument(
+        "--max-retry-wait",
+        type=int,
+        default=120,
+        help="Fail if the provider asks us to wait longer than this many seconds after a 429.",
+    )
     parser.add_argument("--confidence-threshold", type=float, default=0.70)
     args = parser.parse_args()
 

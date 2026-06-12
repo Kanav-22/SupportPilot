@@ -27,6 +27,8 @@ Copy-Item .env.example .env
 
 Fill in `.env` with either Groq for development or OpenAI for the final measured run.
 
+The default Groq development model is `llama-3.1-8b-instant` so the full 400-call A/B run can complete within free-tier rate limits.
+
 ## Data
 
 Create the database and load an exact 200-ticket sample:

@@ -41,7 +41,7 @@ def load_results(db_path: Path) -> pd.DataFrame:
         )
 
 
-def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rates = COST_PER_1K[cost_profile]
     df = df.copy()
     df["category_correct"] = df["pred_category"].str.casefold() == df["true_category"].str.casefold()
@@ -74,14 +74,35 @@ def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.Dat
         .reset_index()
     )
 
-    return summary, by_category
+    prediction_distribution = (
+        df.groupby(["variant", "pred_category"])
+        .agg(tickets=("ticket_id", "count"))
+        .reset_index()
+        .sort_values(["variant", "tickets"], ascending=[True, False])
+    )
+
+    confusion = (
+        df.groupby(["variant", "true_category", "pred_category"])
+        .agg(tickets=("ticket_id", "count"))
+        .reset_index()
+        .sort_values(["variant", "true_category", "tickets"], ascending=[True, True, False])
+    )
+
+    return summary, by_category, prediction_distribution, confusion
 
 
 def pct(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
-def write_report(summary: pd.DataFrame, by_category: pd.DataFrame, output_path: Path, cost_profile: str) -> None:
+def write_report(
+    summary: pd.DataFrame,
+    by_category: pd.DataFrame,
+    prediction_distribution: pd.DataFrame,
+    confusion: pd.DataFrame,
+    output_path: Path,
+    cost_profile: str,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     formatted = summary.copy()
@@ -96,7 +117,14 @@ def write_report(summary: pd.DataFrame, by_category: pd.DataFrame, output_path: 
     category_formatted["category_accuracy"] = category_formatted["category_accuracy"].map(pct)
     category_formatted["avg_confidence"] = category_formatted["avg_confidence"].map(lambda value: f"{value:.2f}")
 
+    distribution_formatted = prediction_distribution.copy()
+    distribution_totals = distribution_formatted.groupby("variant")["tickets"].transform("sum")
+    distribution_formatted["share"] = (distribution_formatted["tickets"] / distribution_totals).map(pct)
+
+    confusion_formatted = confusion.copy()
+
     winner = "Not enough data"
+    baseline_note = "Not enough data"
     if set(summary["variant"]) >= {"zero_shot", "few_shot"}:
         zero = summary.set_index("variant").loc["zero_shot"]
         few = summary.set_index("variant").loc["few_shot"]
@@ -107,6 +135,19 @@ def write_report(summary: pd.DataFrame, by_category: pd.DataFrame, output_path: 
             f"and average token usage by {token_delta:.0f} tokens per ticket versus zero-shot."
         )
 
+    true_distribution = (
+        confusion[["true_category", "tickets"]]
+        .groupby("true_category")["tickets"]
+        .sum()
+        .sort_values(ascending=False)
+    )
+    if not true_distribution.empty:
+        baseline_accuracy = true_distribution.iloc[0] / true_distribution.sum()
+        baseline_note = (
+            f"Majority-class baseline accuracy is {baseline_accuracy * 100:.1f}% "
+            f"by always predicting `{true_distribution.index[0]}`."
+        )
+
     report = f"""# SupportPilot Metrics Report
 
 Generated from local SQLite results.
@@ -114,6 +155,8 @@ Generated from local SQLite results.
 ## Executive Summary
 
 {winner}
+
+{baseline_note}
 
 Cost profile: `{cost_profile}`.
 
@@ -125,11 +168,20 @@ Cost profile: `{cost_profile}`.
 
 {category_formatted.to_markdown(index=False)}
 
+## Prediction Distribution
+
+{distribution_formatted.to_markdown(index=False)}
+
+## Confusion Matrix Rows
+
+{confusion_formatted.to_markdown(index=False)}
+
 ## Notes
 
 - Category and priority accuracy are measured against the source dataset's human labels.
 - Escalation rate is the share of tickets with model confidence below the configured threshold.
 - Cost is estimated from recorded prompt and completion tokens; Groq development runs are treated as $0 in this report.
+- The source descriptions contain substantial generic support-ticket boilerplate, so description-only classification can collapse toward broad issue categories.
 """
     output_path.write_text(report, encoding="utf-8")
 
@@ -145,8 +197,8 @@ def main() -> None:
     if df.empty:
         raise SystemExit("No triage_results found. Run scripts/03_run_experiment.py first.")
 
-    summary, by_category = summarize(df, args.cost_profile)
-    write_report(summary, by_category, Path(args.output), args.cost_profile)
+    summary, by_category, prediction_distribution, confusion = summarize(df, args.cost_profile)
+    write_report(summary, by_category, prediction_distribution, confusion, Path(args.output), args.cost_profile)
     print(f"Wrote {args.output}")
 
 
