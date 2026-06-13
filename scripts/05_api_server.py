@@ -31,6 +31,10 @@ class BatchRequest(BaseModel):
     variant: Literal["zero_shot", "few_shot", "both"] = "zero_shot"
     limit: int | None = Field(default=5, ge=1)
     provider: Literal["groq", "openai"] | None = None
+    timeout: int = Field(default=60, ge=1)
+    max_retries: int = Field(default=4, ge=0)
+    max_retry_wait: int = Field(default=120, ge=0)
+    sleep_seconds: float = Field(default=0, ge=0)
 
 
 @app.get("/health")
@@ -46,7 +50,10 @@ def triage_batch(request: BatchRequest) -> dict[str, object]:
         db=os.getenv("DB_PATH", "db/supportpilot.db"),
         provider=provider,
         limit=request.limit,
-        timeout=60,
+        timeout=request.timeout,
+        max_retries=request.max_retries,
+        max_retry_wait=request.max_retry_wait,
+        sleep_seconds=request.sleep_seconds,
         confidence_threshold=float(os.getenv("CONFIDENCE_THRESHOLD", "0.70")),
     )
 

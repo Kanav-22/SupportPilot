@@ -76,6 +76,17 @@ The report is written to:
 reports/metrics_report.md
 ```
 
+## Results
+
+The completed Groq development run used 200 tickets per variant and kept the dataset unchanged.
+
+| variant | category accuracy | priority accuracy | avg tokens | avg latency |
+|---|---:|---:|---:|---:|
+| zero-shot | 20.5% | 22.0% | 540 | 3.7s |
+| few-shot | 18.0% | 22.5% | 928 | 7.4s |
+
+Few-shot cost more tokens and did not improve category accuracy on this description-only dataset. The main finding is operational: noisy ticket descriptions collapsed predictions toward `Technical issue`, so the report includes prediction distribution and confusion diagnostics instead of hiding the failure mode.
+
 ## n8n
 
 Start the local HTTP bridge:
