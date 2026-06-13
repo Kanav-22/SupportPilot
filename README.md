@@ -29,6 +29,8 @@ Fill in `.env` with either Groq for development or OpenAI for the final measured
 
 The default Groq development model is `llama-3.1-8b-instant` so the full 400-call A/B run can complete within free-tier rate limits.
 
+Experiment results are stored with `provider` and `model` metadata, so stronger-model runs can be compared against Groq without changing the dataset or losing prior results.
+
 ## Data
 
 Create the database and load an exact 200-ticket sample:
@@ -63,6 +65,8 @@ For the final resume-backed run, switch to OpenAI:
 ```powershell
 python scripts/03_run_experiment.py --provider openai --variant both
 ```
+
+The runner skips only rows that already exist for the same provider, model, and prompt variant. This means you can keep the Groq run and add an OpenAI run on the same 200 tickets.
 
 ## Generate Metrics
 

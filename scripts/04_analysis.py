@@ -26,6 +26,8 @@ def load_results(db_path: Path) -> pd.DataFrame:
                 t.true_category,
                 t.true_priority,
                 r.variant,
+                COALESCE(r.provider, 'unknown') AS provider,
+                COALESCE(r.model, 'unknown') AS model,
                 r.pred_category,
                 r.pred_priority,
                 r.pred_sentiment,
@@ -48,9 +50,10 @@ def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.Dat
     df["priority_correct"] = df["pred_priority"].str.casefold() == df["true_priority"].fillna("").str.casefold()
     df["total_tokens"] = df["prompt_tokens"].fillna(0) + df["completion_tokens"].fillna(0)
     df["estimated_cost_usd"] = money(df["prompt_tokens"], rates["prompt"]) + money(df["completion_tokens"], rates["completion"])
+    df["experiment"] = df["provider"] + ":" + df["model"] + ":" + df["variant"]
 
     summary = (
-        df.groupby("variant")
+        df.groupby(["provider", "model", "variant"])
         .agg(
             tickets=("ticket_id", "count"),
             category_accuracy=("category_correct", "mean"),
@@ -65,7 +68,7 @@ def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.Dat
     )
 
     by_category = (
-        df.groupby(["true_category", "variant"])
+        df.groupby(["provider", "model", "true_category", "variant"])
         .agg(
             tickets=("ticket_id", "count"),
             category_accuracy=("category_correct", "mean"),
@@ -75,17 +78,17 @@ def summarize(df: pd.DataFrame, cost_profile: str) -> tuple[pd.DataFrame, pd.Dat
     )
 
     prediction_distribution = (
-        df.groupby(["variant", "pred_category"])
+        df.groupby(["provider", "model", "variant", "pred_category"])
         .agg(tickets=("ticket_id", "count"))
         .reset_index()
-        .sort_values(["variant", "tickets"], ascending=[True, False])
+        .sort_values(["provider", "model", "variant", "tickets"], ascending=[True, True, True, False])
     )
 
     confusion = (
-        df.groupby(["variant", "true_category", "pred_category"])
+        df.groupby(["provider", "model", "variant", "true_category", "pred_category"])
         .agg(tickets=("ticket_id", "count"))
         .reset_index()
-        .sort_values(["variant", "true_category", "tickets"], ascending=[True, True, False])
+        .sort_values(["provider", "model", "variant", "true_category", "tickets"], ascending=[True, True, True, True, False])
     )
 
     return summary, by_category, prediction_distribution, confusion
@@ -118,21 +121,32 @@ def write_report(
     category_formatted["avg_confidence"] = category_formatted["avg_confidence"].map(lambda value: f"{value:.2f}")
 
     distribution_formatted = prediction_distribution.copy()
-    distribution_totals = distribution_formatted.groupby("variant")["tickets"].transform("sum")
+    distribution_totals = distribution_formatted.groupby(["provider", "model", "variant"])["tickets"].transform("sum")
     distribution_formatted["share"] = (distribution_formatted["tickets"] / distribution_totals).map(pct)
 
     confusion_formatted = confusion.copy()
 
     winner = "Not enough data"
     baseline_note = "Not enough data"
-    if set(summary["variant"]) >= {"zero_shot", "few_shot"}:
-        zero = summary.set_index("variant").loc["zero_shot"]
-        few = summary.set_index("variant").loc["few_shot"]
-        delta = few["category_accuracy"] - zero["category_accuracy"]
-        token_delta = few["avg_tokens"] - zero["avg_tokens"]
+    paired = summary.pivot_table(index=["provider", "model"], columns="variant", values=["category_accuracy", "avg_tokens"])
+    paired_complete = paired.dropna()
+    if (
+        ("category_accuracy", "zero_shot") in paired.columns
+        and ("category_accuracy", "few_shot") in paired.columns
+        and not paired_complete.empty
+    ):
+        first_provider, first_model = paired_complete.index[0]
+        pair = paired_complete.loc[(first_provider, first_model)]
+        zero_accuracy = pair[("category_accuracy", "zero_shot")]
+        few_accuracy = pair[("category_accuracy", "few_shot")]
+        zero_tokens = pair[("avg_tokens", "zero_shot")]
+        few_tokens = pair[("avg_tokens", "few_shot")]
+        delta = few_accuracy - zero_accuracy
+        token_delta = few_tokens - zero_tokens
         winner = (
-            f"Few-shot changed category accuracy by {delta * 100:.1f} percentage points "
-            f"and average token usage by {token_delta:.0f} tokens per ticket versus zero-shot."
+            f"For `{first_provider}:{first_model}`, few-shot changed category accuracy by "
+            f"{delta * 100:.1f} percentage points and average token usage by "
+            f"{token_delta:.0f} tokens per ticket versus zero-shot."
         )
 
     true_distribution = (

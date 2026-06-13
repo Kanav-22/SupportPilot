@@ -95,26 +95,45 @@ def call_llm(
     return result, usage, latency_ms
 
 
-def pending_tickets(conn: sqlite3.Connection, variant: str, limit: int | None) -> list[sqlite3.Row]:
+def ensure_result_metadata_columns(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(triage_results)")}
+    if "provider" not in columns:
+        conn.execute("ALTER TABLE triage_results ADD COLUMN provider TEXT")
+    if "model" not in columns:
+        conn.execute("ALTER TABLE triage_results ADD COLUMN model TEXT")
+
+
+def pending_tickets(
+    conn: sqlite3.Connection,
+    variant: str,
+    provider: str,
+    model: str,
+    limit: int | None,
+) -> list[sqlite3.Row]:
     query = """
         SELECT t.id, t.text
         FROM tickets t
         WHERE NOT EXISTS (
             SELECT 1 FROM triage_results r
-            WHERE r.ticket_id = t.id AND r.variant = ?
+            WHERE r.ticket_id = t.id
+              AND r.variant = ?
+              AND r.provider = ?
+              AND r.model = ?
         )
         ORDER BY t.id
     """
     if limit:
         query += " LIMIT ?"
-        return conn.execute(query, (variant, limit)).fetchall()
-    return conn.execute(query, (variant,)).fetchall()
+        return conn.execute(query, (variant, provider, model, limit)).fetchall()
+    return conn.execute(query, (variant, provider, model)).fetchall()
 
 
 def insert_result(
     conn: sqlite3.Connection,
     ticket_id: int,
     variant: str,
+    provider: str,
+    model: str,
     result: dict[str, Any],
     usage: dict[str, int],
     latency_ms: int,
@@ -124,15 +143,17 @@ def insert_result(
     conn.execute(
         """
         INSERT INTO triage_results (
-            ticket_id, variant, pred_category, pred_priority, pred_sentiment,
+            ticket_id, variant, provider, model, pred_category, pred_priority, pred_sentiment,
             draft_response, confidence, escalated, latency_ms,
             prompt_tokens, completion_tokens
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ticket_id,
             variant,
+            provider,
+            model,
             result.get("category"),
             result.get("priority"),
             result.get("sentiment"),
@@ -163,13 +184,15 @@ def mark_processed_when_done(conn: sqlite3.Connection) -> None:
 
 def run_variant(args: argparse.Namespace, variant: str) -> None:
     api_key, base_url, model = provider_config(args.provider)
+    provider = args.provider.lower()
     prompt_path = VARIANTS[variant]
     threshold = float(os.getenv("CONFIDENCE_THRESHOLD", args.confidence_threshold))
 
     with sqlite3.connect(args.db) as conn:
         conn.row_factory = sqlite3.Row
-        tickets = pending_tickets(conn, variant, args.limit)
-        print(f"Running {variant} on {len(tickets)} tickets with {args.provider}:{model}")
+        ensure_result_metadata_columns(conn)
+        tickets = pending_tickets(conn, variant, provider, model, args.limit)
+        print(f"Running {variant} on {len(tickets)} tickets with {provider}:{model}")
         for index, ticket in enumerate(tickets, start=1):
             if index > 1 and args.sleep_seconds > 0:
                 time.sleep(args.sleep_seconds)
@@ -184,7 +207,7 @@ def run_variant(args: argparse.Namespace, variant: str) -> None:
                 args.max_retries,
                 args.max_retry_wait,
             )
-            insert_result(conn, ticket["id"], variant, result, usage, latency_ms, threshold)
+            insert_result(conn, ticket["id"], variant, provider, model, result, usage, latency_ms, threshold)
             conn.commit()
             print(
                 f"[{index}/{len(tickets)}] ticket={ticket['id']} "

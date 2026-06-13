@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS triage_results (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id           INTEGER NOT NULL,
     variant             TEXT NOT NULL CHECK (variant IN ('zero_shot', 'few_shot')),
+    provider            TEXT,
+    model               TEXT,
     pred_category       TEXT,
     pred_priority       TEXT,
     pred_sentiment      TEXT,
@@ -35,14 +37,22 @@ CREATE TABLE IF NOT EXISTS triage_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
-CREATE INDEX IF NOT EXISTS idx_results_ticket_variant ON triage_results(ticket_id, variant);
+CREATE INDEX IF NOT EXISTS idx_results_ticket_variant ON triage_results(ticket_id, variant, provider, model);
 """
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def setup_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        ensure_column(conn, "triage_results", "provider", "TEXT")
+        ensure_column(conn, "triage_results", "model", "TEXT")
 
 
 def main() -> None:
